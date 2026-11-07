@@ -1,0 +1,29 @@
+# Secrets — never commit real environment files
+.env
+.env.*
+!.env.example
+
+# Dependencies / build output
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local data (customer catalogs / product files)
+data/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+.security-backup/
+env-additions.local.txt
