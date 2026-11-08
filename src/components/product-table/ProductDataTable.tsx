@@ -32,8 +32,15 @@ import {
   ShoppingBag,
   ExternalLink,
   FileSpreadsheet,
+  Image as ImageIcon,
+  Download,
+  Loader2,
 } from 'lucide-react';
 import { Product, StockFilterConfig, StockFilterMode } from '@/types';
+import {
+  DEFAULT_EXCEL_EXPORT_CONFIG,
+  exportCatalogToExcel,
+} from '@/lib/excel/catalogExport';
 import AICategorizationModal from './AICategorizationModal';
 import NameShortenerModal from '../ai/NameShortenerModal';
 import ProductImageModal from './ProductImageModal';
@@ -76,6 +83,13 @@ export default function ProductDataTable({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+
+  // Advanced selection & excel export state
+  const [isHeaderSelectionMenuOpen, setIsHeaderSelectionMenuOpen] = useState(false);
+  const [isExcelExportMenuOpen, setIsExcelExportMenuOpen] = useState(false);
+  const [isDirectExporting, setIsDirectExporting] = useState(false);
+  const [directExportProgress, setDirectExportProgress] = useState<{ current: number; total: number } | null>(null);
+  const [directExportSuccess, setDirectExportSuccess] = useState(false);
 
   // Inline category editing state
   const [inlineCategoryEditingId, setInlineCategoryEditingId] = useState<string | null>(null);
@@ -394,14 +408,93 @@ export default function ProductDataTable({
   );
 
   // Selection handlers
+  const handleSelectAll = () => {
+    const newSet = new Set<string>();
+    sortedProducts.forEach((p) => newSet.add(p.id));
+    setSelectedIds(newSet);
+    setIsHeaderSelectionMenuOpen(false);
+  };
+
   const handleSelectAllOnPage = () => {
     const newSet = new Set(selectedIds);
     paginatedProducts.forEach((p) => newSet.add(p.id));
     setSelectedIds(newSet);
+    setIsHeaderSelectionMenuOpen(false);
+  };
+
+  const handleSelectIncluded = () => {
+    const newSet = new Set<string>();
+    sortedProducts.filter((p) => p.includedInCatalog).forEach((p) => newSet.add(p.id));
+    setSelectedIds(newSet);
+    setIsHeaderSelectionMenuOpen(false);
+  };
+
+  const handleSelectWithImages = () => {
+    const newSet = new Set<string>();
+    sortedProducts.filter((p) => Boolean(p.imageData)).forEach((p) => newSet.add(p.id));
+    setSelectedIds(newSet);
+    setIsHeaderSelectionMenuOpen(false);
   };
 
   const handleDeselectAll = () => {
     setSelectedIds(new Set());
+    setIsHeaderSelectionMenuOpen(false);
+  };
+
+  const isAllSelected =
+    sortedProducts.length > 0 && sortedProducts.every((p) => selectedIds.has(p.id));
+  const isAllOnPageSelected =
+    paginatedProducts.length > 0 && paginatedProducts.every((p) => selectedIds.has(p.id));
+
+  const handleToggleHeaderCheckbox = () => {
+    if (isAllSelected) {
+      handleDeselectAll();
+    } else {
+      handleSelectAll();
+    }
+  };
+
+  // Quick Direct Excel Export
+  const handleQuickExcelExport = async (includeImages: boolean) => {
+    try {
+      setIsDirectExporting(true);
+      setDirectExportProgress(null);
+      setDirectExportSuccess(false);
+
+      const targetScope = selectedIds.size > 0 ? 'selected' : 'included';
+      const targetIds = selectedIds.size > 0 ? Array.from(selectedIds) : [];
+
+      const res = await exportCatalogToExcel(
+        products,
+        {
+          ...DEFAULT_EXCEL_EXPORT_CONFIG,
+          currency,
+          includeImages,
+          scope: targetScope,
+          selectedIds: targetIds,
+          columns: {
+            ...DEFAULT_EXCEL_EXPORT_CONFIG.columns,
+            image: includeImages,
+          },
+        },
+        (current, total) => {
+          setDirectExportProgress({ current, total });
+        }
+      );
+
+      if (res.success) {
+        setDirectExportSuccess(true);
+        setTimeout(() => {
+          setDirectExportSuccess(false);
+          setDirectExportProgress(null);
+        }, 4000);
+      }
+    } catch (err: any) {
+      alert('خطأ أثناء تصدير ملف الإكسل: ' + (err.message || ''));
+    } finally {
+      setIsDirectExporting(false);
+      setIsExcelExportMenuOpen(false);
+    }
   };
 
   const handleToggleSelect = (id: string) => {
@@ -663,15 +756,70 @@ export default function ProductDataTable({
           <div className="text-xs text-slate-500 font-bold whitespace-nowrap">
             {filteredProducts.length} من {products.length} منتج
           </div>
+
+          {/* Quick Page Size Pill Selector (عرض منتجات للـ 1000) */}
+          <div className="hidden sm:flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1 text-xs">
+            <span className="text-slate-500 font-bold whitespace-nowrap text-[11px]">عرض:</span>
+            <div className="flex items-center gap-1">
+              {[10, 25, 50, 100, 250, 500, 1000].map((size) => (
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => {
+                    setPageSize(size);
+                    setCurrentPage(1);
+                  }}
+                  className={`px-2 py-0.5 rounded-lg text-[11px] font-bold font-inter transition-all ${
+                    pageSize === size
+                      ? 'bg-[#01334E] text-white shadow-xs scale-105'
+                      : 'text-slate-600 hover:bg-slate-200/80'
+                  }`}
+                  title={`عرض ${size} منتج في الصفحة`}
+                >
+                  {size}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setPageSize(sortedProducts.length > 1000 ? sortedProducts.length : 1000);
+                  setCurrentPage(1);
+                }}
+                className={`px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all ${
+                  pageSize >= (sortedProducts.length || 1000)
+                    ? 'bg-[#01334E] text-white shadow-xs scale-105'
+                    : 'text-slate-600 hover:bg-slate-200/80'
+                }`}
+                title="عرض جميع المنتجات في الصفحة الواحدة"
+              >
+                الكل
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* Bulk Action Buttons */}
-        <div className="flex items-center gap-2">
+        {/* Bulk Action Buttons & Excel Export */}
+        <div className="flex items-center gap-2 flex-wrap">
           {selectedIds.size > 0 ? (
             <>
-              <span className="text-xs font-bold text-sky-700 bg-sky-50 px-2.5 py-1.5 rounded-lg border border-sky-200">
-                محدد: {selectedIds.size}
+              <span className="text-xs font-bold text-sky-800 bg-sky-50 px-2.5 py-1.5 rounded-lg border border-sky-200 flex items-center gap-1">
+                <span>محدد:</span>
+                <strong className="font-inter">{selectedIds.size}</strong>
+                <span>من</span>
+                <strong className="font-inter">{sortedProducts.length}</strong>
               </span>
+
+              {selectedIds.size < sortedProducts.length && (
+                <button
+                  type="button"
+                  onClick={handleSelectAll}
+                  className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs"
+                  title="تحديد كافة المنتجات في الجدول (جميع الصفحات)"
+                >
+                  <CheckSquare className="w-3.5 h-3.5" />
+                  <span>تحديد الكل ({sortedProducts.length})</span>
+                </button>
+              )}
 
               <button
                 onClick={() => setIsNameShortenerOpen(true)}
@@ -725,18 +873,94 @@ export default function ProductDataTable({
                 تعديل فئة المحدد
               </button>
 
-              <button
-                onClick={() => onOpenExcelExport?.(Array.from(selectedIds))}
-                className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
-                title="تصدير المنتجات المحددة إلى ملف Excel (.xlsx) مع الخصم وفئة المنتج"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-200" />
-                تصدير المحدد إلى Excel
-              </button>
+              {/* Split Excel Export Button for Selected Items */}
+              <div className="relative inline-flex items-center shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => onOpenExcelExport?.(Array.from(selectedIds))}
+                  disabled={isDirectExporting}
+                  className="px-3.5 py-1.5 rounded-r-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                  title="تصدير المنتجات المحددة إلى ملف Excel (.xlsx)"
+                >
+                  {isDirectExporting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-200" />
+                  ) : (
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-200" />
+                  )}
+                  <span>تصدير المحدد إلى Excel ({selectedIds.size})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsExcelExportMenuOpen((prev) => !prev)}
+                  disabled={isDirectExporting}
+                  className="px-2 py-1.5 rounded-l-lg bg-emerald-700 hover:bg-emerald-600 text-emerald-100 border-r border-emerald-500 text-xs transition-colors"
+                  title="خيارات إضافية لتصدير المحدد إلى Excel مع أو بدون صور"
+                >
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Excel Menu for Selected Items */}
+                {isExcelExportMenuOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setIsExcelExportMenuOpen(false)}
+                    />
+                    <div className="absolute left-0 top-full mt-1.5 w-64 bg-white rounded-xl shadow-xl border border-slate-200 p-2 z-50 text-xs animate-fadeIn space-y-1">
+                      <div className="px-2.5 py-1 text-[11px] font-bold text-slate-400 border-b border-slate-100">
+                        تصدير {selectedIds.size} منتج محدد:
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleQuickExcelExport(true)}
+                        className="w-full text-right px-3 py-2 rounded-lg hover:bg-indigo-50 text-slate-800 hover:text-indigo-900 font-bold transition-colors flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-2">
+                          <ImageIcon className="w-4 h-4 text-indigo-600" />
+                          <span>تصدير مع صور المنتجات</span>
+                        </div>
+                        <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full font-inter">
+                          Excel 🖼️
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleQuickExcelExport(false)}
+                        className="w-full text-right px-3 py-2 rounded-lg hover:bg-emerald-50 text-slate-800 hover:text-emerald-900 font-bold transition-colors flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-2">
+                          <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                          <span>تصدير بدون صور (سريع)</span>
+                        </div>
+                        <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-inter">
+                          ⚡ سريع
+                        </span>
+                      </button>
+
+                      <div className="border-t border-slate-100 my-1" />
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsExcelExportMenuOpen(false);
+                          onOpenExcelExport?.(Array.from(selectedIds));
+                        }}
+                        className="w-full text-right px-3 py-2 rounded-lg hover:bg-slate-100 text-slate-700 font-bold transition-colors flex items-center gap-2"
+                      >
+                        <SlidersHorizontal className="w-4 h-4 text-slate-500" />
+                        <span>تخصيص الخصومات والأعمدة...</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
 
               <button
                 onClick={handleDeselectAll}
-                className="px-2 py-1.5 text-xs text-slate-400 hover:text-slate-700"
+                className="px-2.5 py-1.5 text-xs text-slate-500 hover:text-slate-800 font-bold"
               >
                 إلغاء التحديد
               </button>
@@ -744,8 +968,20 @@ export default function ProductDataTable({
           ) : (
             <>
               <button
+                type="button"
+                onClick={handleSelectAll}
+                className="px-3.5 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs"
+                title="تحديد كافة المنتجات في الجدول (جميع الصفحات)"
+              >
+                <CheckSquare className="w-3.5 h-3.5 text-sky-600" />
+                <span>تحديد الكل ({sortedProducts.length})</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={handleSelectAllOnPage}
                 className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors"
+                title="تحديد المنتجات في الصفحة الحالية فقط"
               >
                 تحديد صفحة العرض ({paginatedProducts.length})
               </button>
@@ -813,19 +1049,133 @@ export default function ProductDataTable({
                 <span>دمج أوصاف وروابط Shopify</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => onOpenExcelExport?.()}
-                title="تصدير بيانات الكتالوج إلى ملف Excel (.xlsx) متضمناً فئات المنتجات ونسب ومبالغ الخصم"
-                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-200" />
-                <span>تصدير Excel للكتالوج</span>
-              </button>
+              {/* Split Excel Export Button for Whole Catalog */}
+              <div className="relative inline-flex items-center shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => onOpenExcelExport?.()}
+                  disabled={isDirectExporting}
+                  title="تصدير بيانات الكتالوج إلى ملف Excel (.xlsx)"
+                  className="px-3.5 py-1.5 rounded-r-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                >
+                  {isDirectExporting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-200" />
+                  ) : (
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-200" />
+                  )}
+                  <span>تصدير ملف Excel</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsExcelExportMenuOpen((prev) => !prev)}
+                  disabled={isDirectExporting}
+                  className="px-2 py-1.5 rounded-l-lg bg-emerald-700 hover:bg-emerald-600 text-emerald-100 border-r border-emerald-500 text-xs transition-colors"
+                  title="خيارات إضافية لتصدير الكتالوج إلى Excel مع أو بدون صور"
+                >
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Excel Menu for Whole Catalog */}
+                {isExcelExportMenuOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setIsExcelExportMenuOpen(false)}
+                    />
+                    <div className="absolute left-0 top-full mt-1.5 w-64 bg-white rounded-xl shadow-xl border border-slate-200 p-2 z-50 text-xs animate-fadeIn space-y-1">
+                      <div className="px-2.5 py-1 text-[11px] font-bold text-slate-400 border-b border-slate-100">
+                        خيارات تصدير ملف الإكسل:
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleQuickExcelExport(true)}
+                        className="w-full text-right px-3 py-2 rounded-lg hover:bg-indigo-50 text-slate-800 hover:text-indigo-900 font-bold transition-colors flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-2">
+                          <ImageIcon className="w-4 h-4 text-indigo-600" />
+                          <span>تصدير مع صور المنتجات</span>
+                        </div>
+                        <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full font-inter">
+                          Excel 🖼️
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleQuickExcelExport(false)}
+                        className="w-full text-right px-3 py-2 rounded-lg hover:bg-emerald-50 text-slate-800 hover:text-emerald-900 font-bold transition-colors flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-2">
+                          <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                          <span>تصدير بدون صور (سريع)</span>
+                        </div>
+                        <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-inter">
+                          ⚡ سريع
+                        </span>
+                      </button>
+
+                      <div className="border-t border-slate-100 my-1" />
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsExcelExportMenuOpen(false);
+                          onOpenExcelExport?.();
+                        }}
+                        className="w-full text-right px-3 py-2 rounded-lg hover:bg-slate-100 text-slate-700 font-bold transition-colors flex items-center gap-2"
+                      >
+                        <SlidersHorizontal className="w-4 h-4 text-slate-500" />
+                        <span>تخصيص الخصومات والأعمدة...</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </>
           )}
         </div>
       </div>
+
+      {/* Direct Excel Export Progress & Notification Banners */}
+      {isDirectExporting && (
+        <div className="bg-gradient-to-r from-indigo-900 via-slate-900 to-indigo-950 text-white p-3.5 rounded-xl border border-indigo-500/40 text-xs flex items-center justify-between shadow-md animate-fadeIn">
+          <div className="flex items-center gap-3">
+            <Loader2 className="w-5 h-5 text-indigo-400 animate-spin flex-shrink-0" />
+            <div>
+              <span className="font-bold block">
+                {directExportProgress
+                  ? `جاري تجهيز وتضمين صور المنتجات في ملف Excel (${directExportProgress.current} من أصل ${directExportProgress.total})...`
+                  : 'جاري إنشاء ورقة وتنسيق ملف الإكسل...'}
+              </span>
+              <span className="text-[11px] text-indigo-300">
+                يرجى الانتظار، سيتم بدء تحميل الملف تلقائياً فور الانتهاء.
+              </span>
+            </div>
+          </div>
+          {directExportProgress && (
+            <div className="text-left font-inter font-black text-sm text-indigo-300">
+              {Math.round((directExportProgress.current / directExportProgress.total) * 100)}%
+            </div>
+          )}
+        </div>
+      )}
+
+      {directExportSuccess && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-950 p-3 rounded-xl text-xs flex items-center justify-between shadow-sm animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span className="font-bold">تم تصدير وتنزيل ملف Excel بنجاح!</span>
+          </div>
+          <button
+            onClick={() => setDirectExportSuccess(false)}
+            className="text-slate-500 hover:text-slate-800 text-xs px-2 py-0.5 rounded font-bold"
+          >
+            ✕ إغلاق
+          </button>
+        </div>
+      )}
 
       {/* Odoo Sync Notification Banner */}
       {odooSyncNotification && (
@@ -853,25 +1203,157 @@ export default function ProductDataTable({
         </div>
       )}
 
+      {/* Bulk Selection Notification Banner */}
+      {selectedIds.size > 0 && selectedIds.size < sortedProducts.length && (
+        <div className="bg-sky-50 border border-sky-200 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-sky-950 animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-sky-600 flex-shrink-0" />
+            <span>
+              تم تحديد <strong className="font-inter font-bold">{selectedIds.size}</strong> منتج.
+              هل ترغب بتحديد كافة المنتجات في الكتالوج (<strong className="font-inter font-bold">{sortedProducts.length}</strong> منتج)؟
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleSelectAll}
+              className="px-3 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold transition-all shadow-xs"
+            >
+              تحديد كافة الـ {sortedProducts.length} منتج
+            </button>
+            <button
+              type="button"
+              onClick={handleDeselectAll}
+              className="px-2.5 py-1 text-sky-700 hover:text-sky-900 font-bold transition-colors"
+            >
+              إلغاء التحديد
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Products Data Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-right text-xs">
             <thead className="bg-slate-900 text-white font-bold border-b border-slate-800">
               <tr>
-                <th className="p-3 w-10 text-center">
-                  <input
-                    type="checkbox"
-                    checked={
-                      paginatedProducts.length > 0 &&
-                      paginatedProducts.every((p) => selectedIds.has(p.id))
-                    }
-                    onChange={(e) => {
-                      if (e.target.checked) handleSelectAllOnPage();
-                      else handleDeselectAll();
-                    }}
-                    className="rounded border-slate-700 text-sky-500 focus:ring-sky-500 cursor-pointer"
-                  />
+                <th className="p-3 w-16 text-center relative">
+                  <div className="flex items-center justify-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={isAllSelected}
+                      ref={(el) => {
+                        if (el) {
+                          el.indeterminate = !isAllSelected && selectedIds.size > 0;
+                        }
+                      }}
+                      onChange={handleToggleHeaderCheckbox}
+                      title={
+                        isAllSelected
+                          ? 'إلغاء تحديد كافة المنتجات'
+                          : 'تحديد كافة المنتجات في الكتالوج'
+                      }
+                      className="rounded border-slate-700 text-sky-500 focus:ring-sky-500 cursor-pointer"
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsHeaderSelectionMenuOpen((prev) => !prev);
+                      }}
+                      className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
+                      title="خيارات التحديد المتقدمة"
+                    >
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                  </div>
+
+                  {isHeaderSelectionMenuOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setIsHeaderSelectionMenuOpen(false)}
+                      />
+                      <div className="absolute right-0 top-full mt-1 w-64 bg-white rounded-xl shadow-xl border border-slate-200 p-2 z-50 text-xs text-right space-y-1 font-normal font-cairo text-slate-800">
+                        <div className="px-2.5 py-1 text-[11px] font-bold text-slate-400 border-b border-slate-100">
+                          خيارات تحديد المنتجات:
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleSelectAll}
+                          className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-sky-50 text-slate-800 font-bold transition-colors flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-2">
+                            <CheckSquare className="w-3.5 h-3.5 text-sky-600" />
+                            <span>تحديد الكل في الكتالوج</span>
+                          </div>
+                          <span className="font-inter font-bold text-sky-700 text-[11px]">
+                            {sortedProducts.length}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleSelectAllOnPage}
+                          className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-slate-100 text-slate-700 font-bold transition-colors flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Square className="w-3.5 h-3.5 text-slate-400" />
+                            <span>تحديد المعروض بالصفحة</span>
+                          </div>
+                          <span className="font-inter font-bold text-slate-600 text-[11px]">
+                            {paginatedProducts.length}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleSelectIncluded}
+                          className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-slate-100 text-slate-700 font-bold transition-colors flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Eye className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>تحديد المضمنة في PDF</span>
+                          </div>
+                          <span className="font-inter font-bold text-slate-600 text-[11px]">
+                            {products.filter((p) => p.includedInCatalog).length}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleSelectWithImages}
+                          className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-slate-100 text-slate-700 font-bold transition-colors flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-2">
+                            <ImageIcon className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>تحديد التي لها صور فقط</span>
+                          </div>
+                          <span className="font-inter font-bold text-slate-600 text-[11px]">
+                            {products.filter((p) => Boolean(p.imageData)).length}
+                          </span>
+                        </button>
+
+                        {selectedIds.size > 0 && (
+                          <>
+                            <div className="border-t border-slate-100 my-1" />
+                            <button
+                              type="button"
+                              onClick={handleDeselectAll}
+                              className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-rose-50 text-rose-600 font-bold transition-colors flex items-center justify-between"
+                            >
+                              <span>إلغاء التحديد</span>
+                              <span className="font-inter font-bold text-[11px]">
+                                ({selectedIds.size})
+                              </span>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </th>
                 <th
                   onClick={() => {
@@ -1331,12 +1813,16 @@ export default function ProductDataTable({
                 setPageSize(Number(e.target.value));
                 setCurrentPage(1);
               }}
-              className="bg-white border border-slate-300 rounded px-2 py-1 text-xs"
+              className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold font-inter"
             >
-              <option value={10}>10</option>
-              <option value={25}>25</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
+              <option value={10}>10 منتجات</option>
+              <option value={25}>25 منتج</option>
+              <option value={50}>50 منتج</option>
+              <option value={100}>100 منتج</option>
+              <option value={250}>250 منتج</option>
+              <option value={500}>500 منتج</option>
+              <option value={1000}>1,000 منتج</option>
+              <option value={5000}>عرض الكل (كافة المنتجات)</option>
             </select>
             <span>منتج لكل صفحة</span>
           </div>

@@ -18,6 +18,7 @@ import {
   Sparkles,
   ArrowUpDown,
   Tag,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { Product, CatalogExcelExportConfig, CatalogDiscountMode } from '@/types';
 import {
@@ -58,6 +59,7 @@ export default function CatalogExcelExportModal({
     ...DEFAULT_EXCEL_EXPORT_CONFIG,
     projectName: projectName || 'كتالوج المنتجات',
     currency,
+    includeImages: false,
     scope: initialSelectedIds.length > 0 ? 'selected' : 'included',
     selectedIds: initialSelectedIds,
     fixedDiscountPercent: 10,
@@ -65,6 +67,7 @@ export default function CatalogExcelExportModal({
   }));
 
   const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<{ current: number; total: number } | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
   const [activeTab, setActiveTab] = useState<'discount' | 'columns' | 'filters'>('discount');
 
@@ -73,21 +76,34 @@ export default function CatalogExcelExportModal({
     return prepareCatalogExportData(products, config);
   }, [products, config]);
 
+  // عدد المنتجات التي تتوفر لها صور في القائمة المصدرة
+  const productsWithImagesCount = useMemo(() => {
+    return previewData.rows.filter((r) => Boolean(r.product.imageData)).length;
+  }, [previewData.rows]);
+
   if (!isOpen) return null;
 
-  const handleExport = () => {
+  const handleExport = async () => {
     try {
       setIsExporting(true);
-      const res = exportCatalogToExcel(products, {
-        ...config,
-        projectName: projectName || config.projectName,
-        currency,
-      });
+      setExportProgress(null);
+      const res = await exportCatalogToExcel(
+        products,
+        {
+          ...config,
+          projectName: projectName || config.projectName,
+          currency,
+        },
+        (current, total) => {
+          setExportProgress({ current, total });
+        }
+      );
 
       if (res.success) {
         setExportSuccess(true);
         setTimeout(() => {
           setExportSuccess(false);
+          setExportProgress(null);
           onClose();
         }, 1500);
       }
@@ -108,14 +124,32 @@ export default function CatalogExcelExportModal({
     }));
   };
 
+  const toggleIncludeImages = () => {
+    setConfig((prev) => {
+      const nextVal = !prev.includeImages;
+      return {
+        ...prev,
+        includeImages: nextVal,
+        columns: {
+          ...prev.columns,
+          image: nextVal,
+        },
+      };
+    });
+  };
+
   const toggleColumn = (key: keyof typeof config.columns) => {
-    setConfig((prev) => ({
-      ...prev,
-      columns: {
+    setConfig((prev) => {
+      const updatedCols = {
         ...prev.columns,
         [key]: !prev.columns[key],
-      },
-    }));
+      };
+      return {
+        ...prev,
+        columns: updatedCols,
+        includeImages: key === 'image' ? updatedCols.image : prev.includeImages,
+      };
+    });
   };
 
   return (
@@ -180,6 +214,85 @@ export default function CatalogExcelExportModal({
             <span className="font-black text-slate-900 text-sm font-inter">
               {previewData.totalStock.toLocaleString('en-US')} <span className="text-[11px] font-normal text-slate-500">قطعة</span>
             </span>
+          </div>
+        </div>
+
+        {/* ========================================== */}
+        {/* Hero Product Images Switch (خيار إظهار صور المنتجات) */}
+        {/* ========================================== */}
+        <div className="px-6 pt-4 pb-1">
+          <div className={`p-4 rounded-2xl border-2 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+            config.includeImages
+              ? 'bg-gradient-to-r from-indigo-900/90 via-slate-900 to-indigo-950 text-white border-indigo-400/50 shadow-md'
+              : 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-800'
+          }`}>
+            <div className="flex items-center gap-3.5">
+              <div
+                className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 transition-transform ${
+                  config.includeImages
+                    ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/40 ring-2 ring-indigo-300 scale-105'
+                    : 'bg-white text-slate-400 border border-slate-200'
+                }`}
+              >
+                <ImageIcon className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className={`text-sm font-black font-cairo ${config.includeImages ? 'text-white' : 'text-slate-900'}`}>
+                    إظهار صور المنتجات في ملف الإكسل (Excel Images)
+                  </h3>
+                  <span
+                    className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold transition-all ${
+                      config.includeImages
+                        ? 'bg-indigo-400/20 text-indigo-200 border border-indigo-300/40'
+                        : 'bg-slate-200 text-slate-600'
+                    }`}
+                  >
+                    {config.includeImages
+                      ? `✓ مُفعّل (${productsWithImagesCount} صورة متوفرة)`
+                      : '✕ مُعطّل (تصدير بدون صور)'}
+                  </span>
+                </div>
+                <p className={`text-xs mt-1 leading-relaxed ${config.includeImages ? 'text-indigo-200/90' : 'text-slate-500'}`}>
+                  {config.includeImages
+                    ? 'يتم إدراج الصور المصغرة مباشرة داخل خلايا الجدول في ملف Excel مع ضبط ارتفاع الأسطر تلقائياً لتناسب الصور بشكل جذاب.'
+                    : 'تصدير جدول نصي سريع بدون إدراج صور المنتجات، مما يجعل حجم ملف Excel صغيراً جداً وعملية التنزيل فورية.'}
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Segmented Toggle */}
+            <div className="flex items-center gap-2 self-start md:self-center flex-shrink-0 bg-black/10 p-1.5 rounded-2xl border border-white/10">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!config.includeImages) toggleIncludeImages();
+                }}
+                className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 ${
+                  config.includeImages
+                    ? 'bg-indigo-600 text-white shadow-md ring-2 ring-indigo-300'
+                    : 'text-slate-400 hover:text-white hover:bg-white/10'
+                }`}
+              >
+                <ImageIcon className="w-3.5 h-3.5" />
+                <span>مع الصور 🖼️</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (config.includeImages) toggleIncludeImages();
+                }}
+                className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 ${
+                  !config.includeImages
+                    ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-300'
+                    : 'text-indigo-200 hover:text-white hover:bg-white/10'
+                }`}
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>بدون صور ⚡</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -462,6 +575,55 @@ export default function CatalogExcelExportModal({
           {/* TAB 2: الأعمدة وفئة المنتج */}
           {activeTab === 'columns' && (
             <div className="space-y-4">
+              {/* خيار إظهار صور المنتجات داخل ملف الإكسل */}
+              <div
+                onClick={toggleIncludeImages}
+                className={`p-4 rounded-2xl border-2 flex items-center justify-between cursor-pointer transition-all ${
+                  config.includeImages
+                    ? 'border-indigo-500 bg-indigo-50/50 shadow-sm'
+                    : 'border-slate-200 hover:border-slate-300 bg-white'
+                }`}
+              >
+                <div className="flex items-center gap-3.5">
+                  <div
+                    className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-colors ${
+                      config.includeImages
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'bg-slate-100 text-slate-500'
+                    }`}
+                  >
+                    <ImageIcon className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-xs font-bold text-slate-900">
+                        إظهار صور المنتجات داخل ملف الإكسل (Excel Images)
+                      </h4>
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                          config.includeImages
+                            ? 'bg-indigo-100 text-indigo-700'
+                            : 'bg-slate-100 text-slate-500'
+                        }`}
+                      >
+                        {config.includeImages ? 'مُفعّل (مُدرجة بالخلايا)' : 'مُعطّل (بدون صور)'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                      إدراج صور المنتجات مباشرة داخل خلايا الجدول في ملف Excel مع ضبط ارتفاع صفوف الجدول تلقائياً لتناسب الصور
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  className={`w-12 h-6 rounded-full transition-colors p-1 flex items-center flex-shrink-0 ${
+                    config.includeImages ? 'bg-indigo-600 justify-end' : 'bg-slate-300 justify-start'
+                  }`}
+                >
+                  <div className="w-4 h-4 rounded-full bg-white shadow-xs" />
+                </div>
+              </div>
+
               <div className="bg-emerald-50/60 p-4 rounded-2xl border border-emerald-200 flex items-start gap-3">
                 <Tag className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
                 <div>
@@ -481,6 +643,7 @@ export default function CatalogExcelExportModal({
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 text-xs">
                   {[
                     { key: 'category', label: 'فئة المنتج', badge: 'موصى به', color: 'bg-emerald-50 text-emerald-700' },
+                    { key: 'image', label: 'صورة المنتج', badge: 'جديد ومميز', color: 'bg-indigo-50 text-indigo-700' },
                     { key: 'originalPrice', label: `السعر قبل الخصم (${currency})`, badge: 'أساسي' },
                     { key: 'discountPercent', label: 'نسبة الخصم %', badge: 'أساسي' },
                     { key: 'discountAmount', label: `مبلغ الخصم (${currency})`, badge: 'أساسي' },
@@ -496,7 +659,7 @@ export default function CatalogExcelExportModal({
                     { key: 'description', label: 'الوصف' },
                     { key: 'index', label: 'تسلسل (#)' },
                   ].map((col) => {
-                    const isChecked = config.columns[col.key as keyof typeof config.columns];
+                    const isChecked = Boolean(config.columns[col.key as keyof typeof config.columns]);
                     return (
                       <div
                         key={col.key}
@@ -677,6 +840,10 @@ export default function CatalogExcelExportModal({
               <table className="w-full text-right">
                 <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
                   <tr>
+                    {config.columns.index && <th className="p-2 text-center w-8">#</th>}
+                    {(config.includeImages || config.columns.image) && (
+                      <th className="p-2 text-indigo-700 text-center w-14">الصورة</th>
+                    )}
                     {config.columns.category && <th className="p-2 text-indigo-700">فئة المنتج</th>}
                     {config.columns.name && <th className="p-2">اسم المنتج</th>}
                     {config.columns.barcode && <th className="p-2">الباركود</th>}
@@ -690,6 +857,24 @@ export default function CatalogExcelExportModal({
                 <tbody className="divide-y divide-slate-200 bg-white">
                   {previewData.rows.slice(0, 3).map((r, i) => (
                     <tr key={i} className="hover:bg-slate-50">
+                      {config.columns.index && (
+                        <td className="p-2 text-center font-inter text-slate-400">{r.index}</td>
+                      )}
+                      {(config.includeImages || config.columns.image) && (
+                        <td className="p-1.5 text-center">
+                          <div className="w-9 h-9 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden mx-auto flex items-center justify-center">
+                            {r.product.imageData ? (
+                              <img
+                                src={r.product.imageData}
+                                alt={r.name}
+                                className="w-full h-full object-contain p-0.5"
+                              />
+                            ) : (
+                              <Package className="w-4 h-4 text-slate-400" />
+                            )}
+                          </div>
+                        </td>
+                      )}
                       {config.columns.category && (
                         <td className="p-2 font-bold text-indigo-700 whitespace-nowrap">
                           {r.category}
@@ -728,7 +913,7 @@ export default function CatalogExcelExportModal({
                   ))}
                   {previewData.rows.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="p-4 text-center text-slate-400">
+                      <td colSpan={10} className="p-4 text-center text-slate-400">
                         لا توجد منتجات تطابق الفلاتر المحددة
                       </td>
                     </tr>
@@ -743,8 +928,31 @@ export default function CatalogExcelExportModal({
         {/* Modal Footer Actions */}
         {/* ========================================== */}
         <div className="bg-slate-50 px-6 py-4 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="text-xs text-slate-500">
-            جاهز لتصدير <strong className="text-slate-900 font-inter">{previewData.rows.length}</strong> صنف مع فئاتهم وخصوماتهم
+          <div className="flex items-center gap-3 text-xs text-slate-500">
+            <span>
+              جاهز لتصدير <strong className="text-slate-900 font-inter font-bold">{previewData.rows.length}</strong> صنف
+            </span>
+            <span className="text-slate-300">•</span>
+            {/* Quick footer toggle for images */}
+            <button
+              type="button"
+              onClick={toggleIncludeImages}
+              disabled={isExporting}
+              className={`px-3 py-1.5 rounded-full border text-xs font-bold transition-all flex items-center gap-1.5 ${
+                config.includeImages
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-700 shadow-xs'
+                  : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
+              }`}
+              title="انقر لتبديل إظهار الصور أو تصدير بدون صور"
+            >
+              <ImageIcon className={`w-3.5 h-3.5 ${config.includeImages ? 'text-indigo-600' : 'text-slate-400'}`} />
+              <span>إظهار الصور:</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                config.includeImages ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-700'
+              }`}>
+                {config.includeImages ? 'نعم 🖼️' : 'بدون صور ⚡'}
+              </span>
+            </button>
           </div>
 
           <div className="flex items-center gap-2.5 w-full sm:w-auto">
@@ -768,7 +976,11 @@ export default function CatalogExcelExportModal({
               {isExporting ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>جاري إنشاء ملف Excel...</span>
+                  <span>
+                    {exportProgress
+                      ? `جاري تجهيز الصور وملف Excel (${exportProgress.current} / ${exportProgress.total})...`
+                      : 'جاري إنشاء ملف Excel...'}
+                  </span>
                 </>
               ) : exportSuccess ? (
                 <>

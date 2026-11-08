@@ -1,4 +1,3 @@
-import * as XLSX from 'xlsx';
 import {
   Product,
   CatalogExcelExportConfig,
@@ -8,6 +7,7 @@ import {
 
 export const DEFAULT_EXCEL_COLUMNS: CatalogExcelExportColumns = {
   index: true,
+  image: false, // صورة المنتج في الإكسل
   category: true, // فئة المنتج - أساسية دائماً
   name: true,
   barcode: true,
@@ -28,6 +28,7 @@ export const DEFAULT_EXCEL_EXPORT_CONFIG: CatalogExcelExportConfig = {
   projectName: 'كتالوج المنتجات',
   currency: 'د.ع',
   includeSummary: true,
+  includeImages: false,
   scope: 'included',
   excludeOutOfStock: false,
   sortByCategory: true,
@@ -275,19 +276,99 @@ export function prepareCatalogExportData(
 }
 
 /**
- * إنشاء ملف الإكسل وحفظه
+ * تجهيز صورة المنتج بصيغة Base64 المتوافقة مع ExcelJS
  */
-export function exportCatalogToExcel(
+export async function getCleanImageBase64(
+  imageUrlOrData?: string
+): Promise<{ base64: string; extension: 'png' | 'jpeg' } | null> {
+  if (!imageUrlOrData) return null;
+
+  // 1. فحص ما إذا كانت سلسلة base64 مباشرة بصيغة PNG أو JPEG
+  const dataUriMatch = imageUrlOrData.match(/^data:image\/(png|jpeg|jpg);base64,(.+)$/i);
+  if (dataUriMatch) {
+    const ext = dataUriMatch[1].toLowerCase() === 'jpg' ? 'jpeg' : (dataUriMatch[1].toLowerCase() as 'png' | 'jpeg');
+    return { base64: dataUriMatch[2], extension: ext };
+  }
+
+  // 2. إذا كانت سلسلة Base64 نقية بدون data URI
+  if (/^[A-Za-z0-9+/=]+$/.test(imageUrlOrData) && imageUrlOrData.length > 200) {
+    return { base64: imageUrlOrData, extension: 'png' };
+  }
+
+  // 3. إذا كانت WebP أو SVG أو رابط خارجي (URL)، نقوم بتحويلها إلى PNG عبر Canvas في المتصفح
+  if (typeof window !== 'undefined') {
+    try {
+      const img = new window.Image();
+      img.crossOrigin = 'anonymous';
+
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          img.src = '';
+          reject(new Error('Image load timeout'));
+        }, 3500);
+        img.onload = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        img.onerror = () => {
+          clearTimeout(timer);
+          reject(new Error('Failed to load image'));
+        };
+        img.src = imageUrlOrData;
+      });
+
+      const canvas = document.createElement('canvas');
+      const maxDim = 240;
+      let w = img.naturalWidth || img.width || 120;
+      let h = img.naturalHeight || img.height || 120;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
+      }
+      canvas.width = w;
+      canvas.height = h;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/png', 0.9);
+      const cleanBase64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+      return { base64: cleanBase64, extension: 'png' };
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * إنشاء ملف الإكسل وحفظه مع دعم إدراج الصور والتنسيق الاحترافي
+ */
+export async function exportCatalogToExcel(
   products: Product[],
-  config: CatalogExcelExportConfig
-): {
+  config: CatalogExcelExportConfig,
+  onProgress?: (current: number, total: number) => void
+): Promise<{
   success: boolean;
   filename: string;
   rowCount: number;
-} {
+}> {
+  const ExcelJS = await import('exceljs');
+  const WorkbookClass = ExcelJS.Workbook || (ExcelJS as any).default?.Workbook;
+  const workbook = new WorkbookClass();
+  workbook.creator = 'E-ZONE Catalog Studio';
+  workbook.created = new Date();
+
   const currency = config.currency || 'د.ع';
   const projectName = config.projectName || 'كتالوج المنتجات';
   const cols = config.columns;
+  const shouldIncludeImages = Boolean(config.includeImages || cols.image);
 
   const {
     rows,
@@ -299,152 +380,283 @@ export function exportCatalogToExcel(
     categoriesCount,
   } = prepareCatalogExportData(products, config);
 
-  const sheetData: (string | number)[][] = [];
+  const safeSheetName = projectName.slice(0, 31).replace(/[:\\\/?*\[\]]/g, '_') || 'الكتالوج';
+  const worksheet = workbook.addWorksheet(safeSheetName, {
+    views: [{ state: 'normal', rightToLeft: true }],
+    properties: { defaultRowHeight: 22 },
+  });
+
+  let currentRowIdx = 1;
 
   // ==========================================
   // 1. ترويسة معلومات الكتالوج والملخص
   // ==========================================
   if (config.includeSummary) {
-    sheetData.push([`كتالوج المنتجات: ${projectName}`]);
-    sheetData.push([
-      `تاريخ الإصدار: ${new Date().toLocaleDateString('ar-IQ')} ${new Date().toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' })}`,
-      '',
-      `العملة المعتمدة: ${currency}`,
-      '',
-      `نوع احتساب الخصم: ${
-        config.discountMode === 'auto'
-          ? 'تلقائي (سعر الزبون - سعر البيع)'
-          : config.discountMode === 'fixed_percent'
-          ? `نسبة موحدة (${config.fixedDiscountPercent}%)`
-          : config.discountMode === 'fixed_amount'
-          ? `مبلغ ثابت (${config.fixedDiscountAmount.toLocaleString('en-US')} ${currency})`
-          : 'مخصص حسب الفئة'
-      }`,
-    ]);
+    const titleRow = worksheet.getRow(currentRowIdx++);
+    titleRow.getCell(1).value = `كتالوج المنتجات: ${projectName}`;
+    titleRow.font = { name: 'Arial', size: 14, bold: true, color: { argb: 'FF0F172A' } };
+    titleRow.height = 26;
 
-    sheetData.push([
-      `إجمالي الأصناف: ${rows.length}`,
-      '',
-      `عدد الفئات: ${categoriesCount}`,
-      '',
-      `إجمالي المخزون: ${totalStock.toLocaleString('en-US')}`,
-      '',
-      `متوسط الخصم: ${averageDiscountPercent}%`,
-    ]);
+    const metaRow1 = worksheet.getRow(currentRowIdx++);
+    metaRow1.getCell(1).value = `تاريخ الإصدار: ${new Date().toLocaleDateString('ar-IQ')} ${new Date().toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' })}`;
+    metaRow1.getCell(3).value = `العملة المعتمدة: ${currency}`;
+    metaRow1.getCell(5).value = `نوع الخصم: ${
+      config.discountMode === 'auto'
+        ? 'تلقائي (سعر الزبون - سعر البيع)'
+        : config.discountMode === 'fixed_percent'
+        ? `نسبة موحدة (${config.fixedDiscountPercent}%)`
+        : config.discountMode === 'fixed_amount'
+        ? `مبلغ ثابت (${config.fixedDiscountAmount.toLocaleString('en-US')} ${currency})`
+        : 'مخصص حسب الفئة'
+    }`;
+    metaRow1.font = { name: 'Arial', size: 10, color: { argb: 'FF475569' } };
 
-    sheetData.push([]); // سطر فارغ فاصل
+    const metaRow2 = worksheet.getRow(currentRowIdx++);
+    metaRow2.getCell(1).value = `إجمالي الأصناف: ${rows.length}`;
+    metaRow2.getCell(3).value = `عدد الفئات: ${categoriesCount}`;
+    metaRow2.getCell(5).value = `إجمالي المخزون: ${totalStock.toLocaleString('en-US')}`;
+    metaRow2.getCell(7).value = `متوسط الخصم: ${averageDiscountPercent}%`;
+    metaRow2.font = { name: 'Arial', size: 10, color: { argb: 'FF475569' } };
+
+    currentRowIdx++; // سطر فارغ فاصل
   }
 
   // ==========================================
-  // 2. عناوين أعمدة الجدول
+  // 2. إعداد وتحديد أعمدة الجدول
   // ==========================================
-  const headers: string[] = [];
+  interface ColDef {
+    key: string;
+    header: string;
+    width: number;
+    isImage?: boolean;
+    align?: 'center' | 'left' | 'right';
+  }
 
-  if (cols.index) headers.push('#');
-  if (cols.category) headers.push('فئة المنتج'); // فئة المنتج واضحة وبارزة
-  if (cols.name) headers.push('اسم المنتج');
-  if (cols.barcode) headers.push('الباركود');
-  if (cols.internalReference) headers.push('المرجع الداخلي (SKU)');
-  if (cols.originalPrice) headers.push(`السعر قبل الخصم (${currency})`);
-  if (cols.discountPercent) headers.push('نسبة الخصم %');
-  if (cols.discountAmount) headers.push(`مبلغ الخصم (${currency})`);
-  if (cols.finalPrice) headers.push(`السعر بعد الخصم (${currency})`);
-  if (cols.salePrice) headers.push(`سعر الجملة (${currency})`);
-  if (cols.stock) headers.push('المخزون المتوفر');
-  if (cols.unit) headers.push('الوحدة');
-  if (cols.status) headers.push('الحالة في الكتالوج');
-  if (cols.description) headers.push('الوصف');
-  if (cols.shopifyUrl) headers.push('رابط الشراء أونلاين');
+  const colDefs: ColDef[] = [];
+  if (cols.index) colDefs.push({ key: 'index', header: '#', width: 8, align: 'center' });
+  if (shouldIncludeImages) {
+    colDefs.push({ key: 'image', header: 'صورة المنتج', width: 16, isImage: true, align: 'center' });
+  }
+  if (cols.category) colDefs.push({ key: 'category', header: 'فئة المنتج', width: 22, align: 'center' });
+  if (cols.name) colDefs.push({ key: 'name', header: 'اسم المنتج', width: 38, align: 'right' });
+  if (cols.barcode) colDefs.push({ key: 'barcode', header: 'الباركود', width: 20, align: 'center' });
+  if (cols.internalReference) colDefs.push({ key: 'internalReference', header: 'المرجع الداخلي (SKU)', width: 20, align: 'center' });
+  if (cols.originalPrice) colDefs.push({ key: 'originalPrice', header: `السعر قبل الخصم (${currency})`, width: 18, align: 'center' });
+  if (cols.discountPercent) colDefs.push({ key: 'discountPercent', header: 'نسبة الخصم %', width: 14, align: 'center' });
+  if (cols.discountAmount) colDefs.push({ key: 'discountAmount', header: `مبلغ الخصم (${currency})`, width: 16, align: 'center' });
+  if (cols.finalPrice) colDefs.push({ key: 'finalPrice', header: `السعر بعد الخصم (${currency})`, width: 18, align: 'center' });
+  if (cols.salePrice) colDefs.push({ key: 'salePrice', header: `سعر الجملة (${currency})`, width: 16, align: 'center' });
+  if (cols.stock) colDefs.push({ key: 'stock', header: 'المخزون المتوفر', width: 14, align: 'center' });
+  if (cols.unit) colDefs.push({ key: 'unit', header: 'الوحدة', width: 12, align: 'center' });
+  if (cols.status) colDefs.push({ key: 'status', header: 'الحالة في الكتالوج', width: 16, align: 'center' });
+  if (cols.description) colDefs.push({ key: 'description', header: 'الوصف', width: 35, align: 'right' });
+  if (cols.shopifyUrl) colDefs.push({ key: 'shopifyUrl', header: 'رابط الشراء أونلاين', width: 35, align: 'left' });
 
-  sheetData.push(headers);
+  worksheet.columns = colDefs.map((c) => ({
+    width: c.width,
+  }));
 
-  // ==========================================
-  // 3. صفوف بيانات المنتجات
-  // ==========================================
-  rows.forEach((r) => {
-    const rowValues: (string | number)[] = [];
-
-    if (cols.index) rowValues.push(r.index);
-    if (cols.category) rowValues.push(sanitizeCellValue(r.category));
-    if (cols.name) rowValues.push(sanitizeCellValue(r.name));
-    if (cols.barcode) rowValues.push(sanitizeCellValue(r.barcode));
-    if (cols.internalReference) rowValues.push(sanitizeCellValue(r.internalReference));
-    if (cols.originalPrice) rowValues.push(r.originalPrice);
-    if (cols.discountPercent) rowValues.push(`${r.discountPercent}%`);
-    if (cols.discountAmount) rowValues.push(r.discountAmount);
-    if (cols.finalPrice) rowValues.push(r.finalPrice);
-    if (cols.salePrice) rowValues.push(r.salePrice);
-    if (cols.stock) rowValues.push(r.stock);
-    if (cols.unit) rowValues.push(sanitizeCellValue(r.unit));
-    if (cols.status) rowValues.push(r.status);
-    if (cols.description) rowValues.push(sanitizeCellValue(r.description));
-    if (cols.shopifyUrl) rowValues.push(sanitizeCellValue(r.shopifyUrl));
-
-    sheetData.push(rowValues);
+  // سطر الترويسة
+  const headerRow = worksheet.getRow(currentRowIdx++);
+  headerRow.height = 28;
+  colDefs.forEach((col, idx) => {
+    const cell = headerRow.getCell(idx + 1);
+    cell.value = col.header;
+    cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF17181D' },
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF334155' } },
+      bottom: { style: 'medium', color: { argb: 'FF0F172A' } },
+      left: { style: 'thin', color: { argb: 'FF334155' } },
+      right: { style: 'thin', color: { argb: 'FF334155' } },
+    };
   });
+
+  const imageColIdx = colDefs.findIndex((c) => c.isImage);
+
+  // ==========================================
+  // 3. كتابة صفوف المنتجات
+  // ==========================================
+  for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+    const r = rows[rIdx];
+    if (onProgress && (rIdx % 5 === 0 || rIdx === rows.length - 1)) {
+      onProgress(rIdx + 1, rows.length);
+    }
+
+    const row = worksheet.getRow(currentRowIdx);
+    if (shouldIncludeImages) {
+      row.height = 60;
+    } else {
+      row.height = 22;
+    }
+
+    colDefs.forEach((col, cIdx) => {
+      const cell = row.getCell(cIdx + 1);
+      cell.alignment = { vertical: 'middle', horizontal: col.align || 'center' };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      };
+
+      if (rIdx % 2 === 1) {
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFF8FAFC' },
+        };
+      }
+
+      switch (col.key) {
+        case 'index':
+          cell.value = r.index;
+          break;
+        case 'image':
+          cell.value = '';
+          break;
+        case 'category':
+          cell.value = r.category;
+          cell.font = { name: 'Arial', bold: true, color: { argb: 'FF4338CA' } };
+          break;
+        case 'name':
+          cell.value = r.name;
+          cell.font = { name: 'Arial', bold: true, color: { argb: 'FF0F172A' } };
+          break;
+        case 'barcode':
+          cell.value = r.barcode;
+          cell.font = { name: 'Courier New', size: 10 };
+          break;
+        case 'internalReference':
+          cell.value = r.internalReference;
+          cell.font = { name: 'Courier New', size: 10 };
+          break;
+        case 'originalPrice':
+          cell.value = r.originalPrice;
+          cell.numFmt = '#,##0';
+          break;
+        case 'discountPercent':
+          cell.value = `${r.discountPercent}%`;
+          cell.font = { name: 'Arial', bold: true, color: { argb: 'FF059669' } };
+          break;
+        case 'discountAmount':
+          cell.value = r.discountAmount;
+          cell.numFmt = '#,##0';
+          cell.font = { name: 'Arial', bold: true, color: { argb: 'FF047857' } };
+          break;
+        case 'finalPrice':
+          cell.value = r.finalPrice;
+          cell.numFmt = '#,##0';
+          cell.font = { name: 'Arial', bold: true, color: { argb: 'FF0F172A' } };
+          break;
+        case 'salePrice':
+          cell.value = r.salePrice;
+          cell.numFmt = '#,##0';
+          break;
+        case 'stock':
+          cell.value = r.stock;
+          cell.numFmt = '#,##0';
+          break;
+        case 'unit':
+          cell.value = r.unit;
+          break;
+        case 'status':
+          cell.value = r.status;
+          break;
+        case 'description':
+          cell.value = r.description;
+          break;
+        case 'shopifyUrl':
+          if (r.shopifyUrl) {
+            cell.value = { text: 'فتح الرابط أونلاين', hyperlink: r.shopifyUrl };
+            cell.font = { color: { argb: 'FF2563EB' }, underline: true };
+          }
+          break;
+      }
+    });
+
+    // إدراج صورة المنتج بصرياً في الخلية
+    if (shouldIncludeImages && imageColIdx >= 0 && r.product.imageData) {
+      try {
+        const imgResult = await getCleanImageBase64(r.product.imageData);
+        if (imgResult) {
+          const imageId = workbook.addImage({
+            base64: imgResult.base64,
+            extension: imgResult.extension,
+          });
+          worksheet.addImage(imageId, {
+            tl: { col: imageColIdx + 0.08, row: currentRowIdx - 1 + 0.08 },
+            br: { col: imageColIdx + 0.92, row: currentRowIdx - 0.08 },
+            editAs: 'oneCell',
+          } as any);
+        }
+      } catch (err) {
+        console.warn('Could not embed product image:', r.name, err);
+      }
+    }
+
+    currentRowIdx++;
+  }
 
   // ==========================================
   // 4. صف الإجماليات الختامي
   // ==========================================
   if (config.includeSummary && rows.length > 0) {
-    sheetData.push([]); // سطر فارغ
+    currentRowIdx++; // سطر فارغ
+    const totalRow = worksheet.getRow(currentRowIdx);
+    totalRow.height = 24;
+    colDefs.forEach((col, idx) => {
+      const cell = totalRow.getCell(idx + 1);
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFF1F5F9' },
+      };
+      cell.font = { name: 'Arial', bold: true, size: 10, color: { argb: 'FF0F172A' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FFCBD5E1' } },
+        bottom: { style: 'double', color: { argb: 'FF0F172A' } },
+      };
 
-    const totalRow: (string | number)[] = [];
-    if (cols.index) totalRow.push('الإجمالي');
-    if (cols.category) totalRow.push(`عدد الفئات: ${categoriesCount}`);
-    if (cols.name) totalRow.push(`إجمالي: ${rows.length} منتج`);
-    if (cols.barcode) totalRow.push('');
-    if (cols.internalReference) totalRow.push('');
-    if (cols.originalPrice) totalRow.push('');
-    if (cols.discountPercent) totalRow.push(`متوسط: ${averageDiscountPercent}%`);
-    if (cols.discountAmount) totalRow.push('');
-    if (cols.finalPrice) totalRow.push('');
-    if (cols.salePrice) totalRow.push('');
-    if (cols.stock) totalRow.push(totalStock);
-    if (cols.unit) totalRow.push('');
-    if (cols.status) totalRow.push('');
-    if (cols.description) totalRow.push('');
-    if (cols.shopifyUrl) totalRow.push('');
-
-    sheetData.push(totalRow);
+      if (col.key === 'index') cell.value = 'الإجمالي';
+      if (col.key === 'category') cell.value = `عدد الفئات: ${categoriesCount}`;
+      if (col.key === 'name') cell.value = `إجمالي: ${rows.length} منتج`;
+      if (col.key === 'discountPercent') cell.value = `متوسط: ${averageDiscountPercent}%`;
+      if (col.key === 'stock') {
+        cell.value = totalStock;
+        cell.numFmt = '#,##0';
+      }
+    });
   }
 
   // ==========================================
-  // 5. إنشاء الورقة والمصنف وضبط القياسات
+  // 5. حفظ وتنزيل الملف في المتصفح
   // ==========================================
-  const ws = XLSX.utils.aoa_to_sheet(sheetData);
-
-  // تفعيل الاتجاه من اليمين إلى اليسار (RTL) للغة العربية في Excel
-  ws['!views'] = [{ RTL: true }];
-
-  // حساب العرض التلقائي لكل عمود بحيث لا تقتطع النصوص
-  const colWidths = headers.map((header, colIdx) => {
-    let maxLen = header.length;
-    // فحص عينات من الصفوف لتحديد العرض المناسب
-    sheetData.slice(config.includeSummary ? 4 : 0).forEach((row) => {
-      const cell = row[colIdx];
-      if (cell !== undefined && cell !== null) {
-        const strLen = String(cell).length;
-        if (strLen > maxLen) maxLen = strLen;
-      }
-    });
-    // إضافة هوامش مريحة
-    return { wch: Math.min(65, Math.max(maxLen + 4, 10)) };
-  });
-
-  ws['!cols'] = colWidths;
-
-  const wb = XLSX.utils.book_new();
-  const safeSheetName = projectName.slice(0, 31).replace(/[:\\\/?*\[\]]/g, '_') || 'الكتالوج';
-  XLSX.utils.book_append_sheet(wb, ws, safeSheetName);
-
-  // اسم الملف النظيف
   const safeFileProjectName = projectName.replace(/[\/\\?%*:|"<>]/g, '_');
   const dateStr = new Date().toISOString().slice(0, 10);
   const filename = `كتالوج_${safeFileProjectName}_${dateStr}.xlsx`;
 
-  // تنفيذ التنزيل
-  XLSX.writeFile(wb, filename);
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+
+  if (typeof window !== 'undefined') {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  }
 
   return {
     success: true,

@@ -593,6 +593,7 @@ export type CatalogDiscountMode = 'auto' | 'fixed_percent' | 'fixed_amount' | 'p
 
 export interface CatalogExcelExportColumns {
   index: boolean;
+  image?: boolean;
   category: boolean;
   name: boolean;
   barcode: boolean;
@@ -613,6 +614,7 @@ export interface CatalogExcelExportConfig {
   projectName?: string;
   currency?: string;
   includeSummary?: boolean;
+  includeImages?: boolean;
   scope: 'all' | 'included' | 'selected';
   selectedIds?: string[];
   excludeOutOfStock: boolean;
